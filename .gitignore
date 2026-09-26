@@ -1,0 +1,10 @@
+# Build output
+/britzelator
+/britzelator.exe
+/dist/
+
+# Test artifacts
+*.test
+
+# Local credentials
+.env
