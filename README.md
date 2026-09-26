@@ -5,8 +5,9 @@ around controlling shockers: single control messages, and a randomized mode that
 fires controls at drawn intervals with drawn intensity and duration.
 
 [![CI](https://github.com/teal-bauer/britzelator/actions/workflows/ci.yml/badge.svg)](https://github.com/teal-bauer/britzelator/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/teal-bauer/britzelator?include_prereleases&sort=semver)](https://github.com/teal-bauer/britzelator/releases)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
+
+[Download the latest release](https://github.com/teal-bauer/britzelator/releases) — prebuilt binaries for Linux, macOS, and Windows.
 
 ## ⚠️ Safety and responsible use
 
