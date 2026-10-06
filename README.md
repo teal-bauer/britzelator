@@ -135,9 +135,13 @@ prints the exact JSON body instead of sending it.
 
 ### Random mode
 
-`random` draws a delay, waits it out, then sends a control whose intensity and
-duration are drawn uniformly from the supplied ranges. It repeats until
-interrupted with Ctrl-C or until the round count is reached.
+`random` draws an interval between control request starts, with intensity and
+duration drawn uniformly from the supplied ranges. The first round waits its
+full interval; subsequent waits account for time spent awaiting the previous
+HTTP response. If a request exceeds the next interval, the next round starts
+immediately after the response, without accumulating catch-up rounds. Timing
+is local to the client, not a measurement of hardware activation. It repeats
+until interrupted with Ctrl-C or until the round count is reached.
 
 ```sh
 # one shock somewhere in the next 5..60s, intensity 10..40, duration 0.5..2s

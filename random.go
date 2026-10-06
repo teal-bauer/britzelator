@@ -33,9 +33,9 @@ type randomOptions struct {
 	independent  bool
 }
 
-// cmdRandom runs a randomized control loop: draw a delay, wait it out, then
-// send a control message whose intensity and duration are drawn from the given
-// ranges. It repeats until interrupted or until the drawn round count is done.
+// cmdRandom sends controls at randomized start-to-start intervals, with
+// intensity and duration drawn from the given ranges. It repeats until
+// interrupted or until the drawn round count is done.
 //
 // With --independent every named shocker gets its own loop and its own random
 // draws, so they fire on unrelated schedules. Without it, one draw drives all
@@ -51,8 +51,8 @@ func cmdRandom(g *globals, args []string) error {
 		durationMin:  500,
 		durationMax:  2000,
 	}
-	fs.Var(secondsValue{&opts.delayMin}, "delay-min", "minimum wait before a control round, e.g. 5, 5s, 500ms")
-	fs.Var(secondsValue{&opts.delayMax}, "delay-max", "maximum wait before a control round")
+	fs.Var(secondsValue{&opts.delayMin}, "delay-min", "minimum interval between control starts, e.g. 5, 5s, 500ms")
+	fs.Var(secondsValue{&opts.delayMax}, "delay-max", "maximum interval between control starts")
 	fs.IntVar(&opts.intensityMin, "intensity-min", opts.intensityMin, "minimum intensity (0..100)")
 	fs.IntVar(&opts.intensityMax, "intensity-max", opts.intensityMax, "maximum intensity (0..100)")
 	fs.Var(durationValue{&opts.durationMin}, "duration-min", "minimum duration, e.g. 500, 500ms, 1s")
@@ -211,6 +211,10 @@ func runIndependentLoops(ctx context.Context, c *Client, targets []Shocker, opts
 // control request, which is how the non-independent mode applies one draw to
 // several shockers.
 func runRandomLoop(ctx context.Context, c *Client, targets []Shocker, label string, opts randomOptions, roundsMin, roundsMax int, rnd *rand.Rand, log *loopLogger) (int, error) {
+	return runRandomLoopWithClock(ctx, c, targets, label, opts, roundsMin, roundsMax, rnd, log, time.Now, sleepCtx)
+}
+
+func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, label string, opts randomOptions, roundsMin, roundsMax int, rnd *rand.Rand, log *loopLogger, now func() time.Time, sleep func(context.Context, time.Duration) error) (int, error) {
 	rounds := randInt(rnd, roundsMin, roundsMax)
 	if roundsMin != roundsMax {
 		if rounds == 0 {
@@ -221,6 +225,7 @@ func runRandomLoop(ctx context.Context, c *Client, targets []Shocker, label stri
 	}
 
 	sent := 0
+	previousStart := now()
 	for round := 1; rounds == 0 || round <= rounds; round++ {
 		delay := opts.delayMin
 		if opts.delayMax > opts.delayMin {
@@ -229,19 +234,22 @@ func runRandomLoop(ctx context.Context, c *Client, targets []Shocker, label stri
 		intensity := randInt(rnd, opts.intensityMin, opts.intensityMax)
 		duration := randInt(rnd, opts.durationMin, opts.durationMax)
 
+		deadline := previousStart.Add(secondsToDuration(delay))
+		wait := max(time.Duration(0), deadline.Sub(now()))
 		if opts.count == 1 && roundsMin == roundsMax {
-			log.logf("%s: %s i=%d d=%dms in %.1fs", label, opts.mode, intensity, duration, delay)
+			log.logf("%s: %s i=%d d=%dms in %.1fs", label, opts.mode, intensity, duration, wait.Seconds())
 		} else {
-			log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", label, round, opts.mode, intensity, duration, delay)
+			log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", label, round, opts.mode, intensity, duration, wait.Seconds())
 		}
 
-		// The delay is drawn before the control message and waited out first,
-		// so the next control lands a random time from now.
-		if err := sleepCtx(ctx, secondsToDuration(delay)); err != nil {
+		// HTTP response time counts toward the interval. Rebase on actual
+		// starts so overruns cannot build up a backlog of overdue controls.
+		if err := sleep(ctx, max(time.Duration(0), deadline.Sub(now()))); err != nil || ctx.Err() != nil {
 			log.logf("%s: interrupted after %d round(s), %d sent", label, round-1, sent)
 			return sent, nil
 		}
 
+		previousStart = now()
 		if opts.dryRun {
 			log.logf("%s: dry-run, not sending", label)
 			continue
@@ -284,6 +292,9 @@ func secondsToDuration(seconds float64) time.Duration {
 
 // sleepCtx waits for d or for cancellation, whichever comes first.
 func sleepCtx(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
