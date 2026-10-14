@@ -163,7 +163,8 @@ britzelator random Collar1 Collar2 Collar3 --independent --delay-min 10s --delay
 | `--duration-min` / `--duration-max` | 500 / 2000 | duration range (300ms..65535ms); bare numbers are milliseconds |
 | `--device-intensity` | | per-shocker override: `SHOCKER=MIN..MAX` or `SHOCKER=VALUE`; repeatable |
 | `--device-duration` | | per-shocker duration override with the same syntax; repeatable |
-| `--mode` | shock | mode used for every round |
+| `--mode` | shock | action or slash-separated actions, e.g. `vibrate/shock` |
+| `--weights` | equal | colon-separated action weights in `--mode` order, e.g. `20:80` |
 | `--count` | 0 | fixed rounds per loop; 0 means until interrupted |
 | `--count-min` / `--count-max` | | draw the round count per loop from this range |
 | `--independent` | off | one loop per shocker instead of one shared draw |
@@ -175,6 +176,14 @@ Durations accept a `ms`, `s`, or `m` suffix (`300`, `300ms`, `1.5s`, `2m`) and
 delays accept the same suffixes with bare numbers read as seconds (`30`, `30s`,
 `500ms`, `2m`). The same suffixes work for `control --duration` and the token
 limit flags.
+
+Multiple actions draw a mode independently each round. For a 20% vibrate / 80%
+shock distribution, use `--mode vibrate/shock --weights 20:80`. Weights are
+nonnegative integers representing relative likelihood, not exact round counts;
+`1:4` and `20:80` are equivalent. Zero disables an action, and at least one
+weight must be positive. Omitting weights gives equal chances. Shared schedules
+use one action draw for all shockers; independent schedules draw per loop.
+`stop` is not allowed in random mode.
 
 Per-device ranges override only the specified setting; other settings use the
 global ranges. References resolve against the selected shockers using UUIDs,

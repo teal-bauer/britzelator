@@ -33,6 +33,7 @@ type randomOptions struct {
 	dryRun       bool
 	independent  bool
 	deviceRanges map[string]deviceRandomRanges
+	actions      []randomAction
 }
 
 // cmdRandom sends controls at randomized start-to-start intervals, with
@@ -62,7 +63,8 @@ func cmdRandom(g *globals, args []string) error {
 	fs.IntVar(&opts.intensityMax, "intensity-max", opts.intensityMax, "maximum intensity (0..100)")
 	fs.Var(durationValue{&opts.durationMin}, "duration-min", "minimum duration, e.g. 500, 500ms, 1s")
 	fs.Var(durationValue{&opts.durationMax}, "duration-max", "maximum duration, e.g. 2000, 2s")
-	fs.StringVar(&opts.mode, "mode", opts.mode, "control mode: shock, vibrate, tone (sound)")
+	fs.StringVar(&opts.mode, "mode", opts.mode, "control mode(s): shock, vibrate, tone (sound), e.g. vibrate/shock")
+	weights := fs.String("weights", "", "action weights matching --mode, e.g. 20:80 (default: equal)")
 	fs.IntVar(&opts.count, "count", 0, "fixed number of rounds per loop (0 = until interrupted)")
 	fs.Var(intFlag(&opts.countMin), "count-min", "minimum rounds per loop, drawn randomly per loop")
 	fs.Var(intFlag(&opts.countMax), "count-max", "maximum rounds per loop, drawn randomly per loop")
@@ -82,13 +84,11 @@ func cmdRandom(g *globals, args []string) error {
 		return err
 	}
 
-	typeName, err := normalizeMode(opts.mode)
+	actions, err := parseRandomActions(opts.mode, *weights)
 	if err != nil {
 		return err
 	}
-	if typeName == "Stop" {
-		return usagef("--mode stop makes no sense for random mode")
-	}
+	opts.actions = actions
 	if opts.delayMin < 0 || opts.delayMax < opts.delayMin {
 		return usagef("delay range invalid: --delay-min=%gs --delay-max=%gs", opts.delayMin, opts.delayMax)
 	}
@@ -108,7 +108,7 @@ func cmdRandom(g *globals, args []string) error {
 	if err != nil {
 		return err
 	}
-	opts.mode = typeName
+	opts.mode = describeActions(actions)
 
 	targets, err := resolveTargets(g, fs.Args())
 	if err != nil {
@@ -246,10 +246,11 @@ func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, l
 		if opts.delayMax > opts.delayMin {
 			delay = opts.delayMin + rnd.Float64()*(opts.delayMax-opts.delayMin)
 		}
+		mode := opts.drawMode(rnd)
 		intensity := randInt(rnd, opts.intensityMin, opts.intensityMax)
 		duration := randInt(rnd, opts.durationMin, opts.durationMax)
 
-		payload := buildControlRequest(targets, opts.mode, intensity, duration, opts.exclusive, opts.customName)
+		payload := buildControlRequest(targets, mode, intensity, duration, opts.exclusive, opts.customName)
 		for i, target := range targets {
 			ranges := opts.deviceRanges[strings.ToLower(target.ID)]
 			if ranges.intensity != nil {
@@ -265,12 +266,12 @@ func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, l
 		if len(opts.deviceRanges) > 0 {
 			for i, target := range targets {
 				control := payload.Shocks[i]
-				log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", target.Label(), round, opts.mode, control.Intensity, control.Duration, wait.Seconds())
+				log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", target.Label(), round, mode, control.Intensity, control.Duration, wait.Seconds())
 			}
 		} else if opts.count == 1 && roundsMin == roundsMax {
-			log.logf("%s: %s i=%d d=%dms in %.1fs", label, opts.mode, intensity, duration, wait.Seconds())
+			log.logf("%s: %s i=%d d=%dms in %.1fs", label, mode, intensity, duration, wait.Seconds())
 		} else {
-			log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", label, round, opts.mode, intensity, duration, wait.Seconds())
+			log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", label, round, mode, intensity, duration, wait.Seconds())
 		}
 
 		// HTTP response time counts toward the interval. Rebase on actual
