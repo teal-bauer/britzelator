@@ -165,6 +165,7 @@ britzelator random Collar1 Collar2 Collar3 --independent --delay-min 10s --delay
 | `--device-duration` | | per-shocker duration override with the same syntax; repeatable |
 | `--mode` | shock | action or slash-separated actions, e.g. `vibrate/shock` |
 | `--weights` | equal | colon-separated action weights in `--mode` order, e.g. `20:80` |
+| `--device-weights` | | per-shocker action weights in `--mode` order: `SHOCKER=20:80`; repeatable |
 | `--count` | 0 | fixed rounds per loop; 0 means until interrupted |
 | `--count-min` / `--count-max` | | draw the round count per loop from this range |
 | `--independent` | off | one loop per shocker instead of one shared draw |
@@ -182,8 +183,20 @@ shock distribution, use `--mode vibrate/shock --weights 20:80`. Weights are
 nonnegative integers representing relative likelihood, not exact round counts;
 `1:4` and `20:80` are equivalent. Zero disables an action, and at least one
 weight must be positive. Omitting weights gives equal chances. Shared schedules
-use one action draw for all shockers; independent schedules draw per loop.
-`stop` is not allowed in random mode.
+use one action draw for all shockers unless `--device-weights` overrides a
+shocker's distribution; overridden distributions draw separately. Independent
+schedules draw per loop. `stop` is not allowed in random mode.
+
+```sh
+britzelator random Zip Zap --independent --mode vibrate/shock \
+    --device-intensity 'Zip=8..30' --device-duration 'Zip=1s..4s' \
+    --device-weights 'Zip=20:80' \
+    --device-intensity 'Zap=1..6' --device-duration 'Zap=500ms..3.5s' \
+    --device-weights 'Zap=10:90'
+```
+
+This runs until Ctrl-C, with each shocker on its own 5..30-second schedule.
+Append `--dry-run --count 3` to preview three rounds per device without sending.
 
 Per-device ranges override only the specified setting; other settings use the
 global ranges. References resolve against the selected shockers using UUIDs,

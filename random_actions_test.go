@@ -107,9 +107,6 @@ func TestWeightedRandomActionsCLI(t *testing.T) {
 					if control.Type != "Vibrate" && control.Type != "Shock" {
 						t.Errorf("unexpected action: %+v", control)
 					}
-					if control.Type != req.Shocks[0].Type {
-						t.Errorf("shared schedule must share action draws: %+v", req)
-					}
 					if control.Intensity != 4 || control.Duration != 300 {
 						t.Errorf("unexpected device ranges: %+v", control)
 					}
@@ -125,7 +122,7 @@ func TestWeightedRandomActionsCLI(t *testing.T) {
 			args := []string{index[0].ID, index[1].ID, "--mode", "vibrate/shock", "--weights", "20:80",
 				"--delay-min", "0", "--delay-max", "0", "--count", "50", "--seed", "42",
 				"--intensity-min", "4", "--intensity-max", "4", "--duration-min", "300", "--duration-max", "300",
-				"--device-intensity", index[0].ID + "=4"}
+				"--device-intensity", index[0].ID + "=4", "--device-weights", index[0].ID + "=100:0"}
 			if independent {
 				args = append(args, "--independent")
 			}
@@ -134,10 +131,11 @@ func TestWeightedRandomActionsCLI(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			for _, target := range index[:2] {
-				if counts[target.ID]["Vibrate"] == 0 || counts[target.ID]["Shock"] == 0 || counts[target.ID]["Vibrate"]+counts[target.ID]["Shock"] != 50 {
-					t.Fatalf("unexpected action counts: %v", counts)
-				}
+			if counts[index[0].ID]["Vibrate"] != 50 || counts[index[0].ID]["Shock"] != 0 {
+				t.Fatalf("per-device action weights not applied: %v", counts)
+			}
+			if counts[index[1].ID]["Vibrate"] == 0 || counts[index[1].ID]["Shock"] == 0 || counts[index[1].ID]["Vibrate"]+counts[index[1].ID]["Shock"] != 50 {
+				t.Fatalf("global action weights not applied: %v", counts)
 			}
 		})
 	}

@@ -185,7 +185,7 @@ func TestRandomDeviceRangesDryRun(t *testing.T) {
 
 func TestRandomDeviceRangesReproducible(t *testing.T) {
 	targets := testIndex()
-	opts := randomOptions{mode: "Vibrate", intensityMin: 1, intensityMax: 10, durationMin: 300, durationMax: 500,
+	opts := randomOptions{mode: "Vibrate", actions: []randomAction{{"Vibrate", 20}, {"Shock", 80}}, intensityMin: 1, intensityMax: 10, durationMin: 300, durationMax: 500,
 		deviceRanges: map[string]deviceRandomRanges{targets[0].ID: {intensity: &randomRange{20, 30}, duration: &randomRange{600, 900}}}}
 	run := func() []ControlRequest {
 		var requests []ControlRequest
@@ -207,6 +207,9 @@ func TestRandomDeviceRangesReproducible(t *testing.T) {
 		t.Fatal("fixed seed must reproduce per-device draws")
 	}
 	for _, req := range first {
+		if req.Shocks[0].Type != req.Shocks[1].Type || req.Shocks[1].Type != req.Shocks[2].Type {
+			t.Fatalf("devices without action overrides must share actions: %+v", req)
+		}
 		if req.Shocks[1].Intensity != req.Shocks[2].Intensity || req.Shocks[1].Duration != req.Shocks[2].Duration {
 			t.Fatalf("unoverridden devices must share draws: %+v", req)
 		}

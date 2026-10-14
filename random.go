@@ -42,7 +42,7 @@ type randomOptions struct {
 //
 // With --independent every named shocker gets its own loop and its own random
 // draws, so they fire on unrelated schedules. Without it, one draw drives all
-// the named shockers at once.
+// the named shockers at once, with separate draws for per-device overrides.
 func cmdRandom(g *globals, args []string) error {
 	fs := g.newFlagSet("random")
 	opts := randomOptions{
@@ -55,6 +55,8 @@ func cmdRandom(g *globals, args []string) error {
 		durationMax:  2000,
 	}
 	var deviceIntensities, deviceDurations []deviceRange
+	var deviceActionWeights []deviceWeights
+	fs.Var(deviceWeightsFlag{values: &deviceActionWeights}, "device-weights", "per-shocker action weights in --mode order: SHOCKER=20:80 (repeatable)")
 	fs.Var(deviceRangeFlag{values: &deviceIntensities}, "device-intensity", "per-shocker intensity: SHOCKER=MIN..MAX or SHOCKER=VALUE (repeatable)")
 	fs.Var(deviceRangeFlag{values: &deviceDurations, duration: true}, "device-duration", "per-shocker duration: SHOCKER=MIN..MAX or SHOCKER=VALUE (repeatable)")
 	fs.Var(secondsValue{&opts.delayMin}, "delay-min", "minimum interval between control starts, e.g. 5, 5s, 500ms")
@@ -89,6 +91,12 @@ func cmdRandom(g *globals, args []string) error {
 		return err
 	}
 	opts.actions = actions
+	for i := range deviceActionWeights {
+		deviceActionWeights[i].actions, err = parseRandomActions(opts.mode, deviceActionWeights[i].weights)
+		if err != nil {
+			return usagef("--device-weights for %q: %v", deviceActionWeights[i].target, err)
+		}
+	}
 	if opts.delayMin < 0 || opts.delayMax < opts.delayMin {
 		return usagef("delay range invalid: --delay-min=%gs --delay-max=%gs", opts.delayMin, opts.delayMax)
 	}
@@ -119,6 +127,9 @@ func cmdRandom(g *globals, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := resolveDeviceWeights(targets, deviceActionWeights, opts.deviceRanges); err != nil {
+		return err
+	}
 
 	var c *Client
 	if !opts.dryRun {
@@ -134,7 +145,7 @@ func cmdRandom(g *globals, args []string) error {
 	if len(opts.deviceRanges) > 0 {
 		for _, target := range targets {
 			ranges := opts.forTarget(target)
-			log.logf("%s: intensity %d..%d, duration %d..%dms", target.Label(), ranges.intensityMin, ranges.intensityMax, ranges.durationMin, ranges.durationMax)
+			log.logf("%s: intensity %d..%d, duration %d..%dms, mode %s", target.Label(), ranges.intensityMin, ranges.intensityMax, ranges.durationMin, ranges.durationMax, ranges.mode)
 		}
 	}
 	if opts.independent && len(targets) > 1 {
@@ -253,6 +264,9 @@ func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, l
 		payload := buildControlRequest(targets, mode, intensity, duration, opts.exclusive, opts.customName)
 		for i, target := range targets {
 			ranges := opts.deviceRanges[strings.ToLower(target.ID)]
+			if ranges.actions != nil {
+				payload.Shocks[i].Type = opts.forTarget(target).drawMode(rnd)
+			}
 			if ranges.intensity != nil {
 				payload.Shocks[i].Intensity = randInt(rnd, ranges.intensity.min, ranges.intensity.max)
 			}
@@ -266,7 +280,7 @@ func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, l
 		if len(opts.deviceRanges) > 0 {
 			for i, target := range targets {
 				control := payload.Shocks[i]
-				log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", target.Label(), round, mode, control.Intensity, control.Duration, wait.Seconds())
+				log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", target.Label(), round, control.Type, control.Intensity, control.Duration, wait.Seconds())
 			}
 		} else if opts.count == 1 && roundsMin == roundsMax {
 			log.logf("%s: %s i=%d d=%dms in %.1fs", label, mode, intensity, duration, wait.Seconds())

@@ -60,6 +60,7 @@ func (f deviceRangeFlag) Set(raw string) error {
 type deviceRandomRanges struct {
 	intensity *randomRange
 	duration  *randomRange
+	actions   []randomAction
 }
 
 // Overrides resolve only against selected shockers; they never add targets.
@@ -67,20 +68,9 @@ func resolveDeviceRanges(targets []Shocker, intensities, durations []deviceRange
 	out := make(map[string]deviceRandomRanges)
 	for kind, values := range [][]deviceRange{intensities, durations} {
 		for _, value := range values {
-			resolved, err := resolveShockers([]string{value.target}, targets)
+			id, err := selectedDeviceID(targets, value.target)
 			if err != nil {
-				return nil, usagef("device range: %v", err)
-			}
-			id := strings.ToLower(resolved[0].ID)
-			selected := false
-			for _, target := range targets {
-				if strings.EqualFold(target.ID, id) {
-					selected = true
-					break
-				}
-			}
-			if !selected {
-				return nil, usagef("device range: %q is not a selected shocker", value.target)
+				return nil, err
 			}
 			ranges := out[id]
 			field := &ranges.intensity
@@ -108,6 +98,60 @@ func (o randomOptions) forTarget(target Shocker) randomOptions {
 	if ranges.duration != nil {
 		o.durationMin, o.durationMax = ranges.duration.min, ranges.duration.max
 	}
+	if ranges.actions != nil {
+		o.actions = ranges.actions
+		o.mode = describeActions(ranges.actions)
+	}
 	o.deviceRanges = nil
 	return o
+}
+
+func selectedDeviceID(targets []Shocker, name string) (string, error) {
+	resolved, err := resolveShockers([]string{name}, targets)
+	if err != nil {
+		return "", usagef("device override: %v", err)
+	}
+	id := strings.ToLower(resolved[0].ID)
+	for _, target := range targets {
+		if strings.EqualFold(target.ID, id) {
+			return id, nil
+		}
+	}
+	return "", usagef("device override: %q is not a selected shocker", name)
+}
+
+type deviceWeights struct {
+	target, weights string
+	actions         []randomAction
+}
+
+type deviceWeightsFlag struct{ values *[]deviceWeights }
+
+func (f deviceWeightsFlag) String() string { return "" }
+
+func (f deviceWeightsFlag) Set(raw string) error {
+	target, weights, ok := strings.Cut(raw, "=")
+	target = strings.TrimSpace(target)
+	weights = strings.TrimSpace(weights)
+	if !ok || target == "" || weights == "" {
+		return fmt.Errorf("want SHOCKER=WEIGHT:WEIGHT, e.g. Collar=20:80")
+	}
+	*f.values = append(*f.values, deviceWeights{target: target, weights: weights})
+	return nil
+}
+
+func resolveDeviceWeights(targets []Shocker, values []deviceWeights, ranges map[string]deviceRandomRanges) error {
+	for _, value := range values {
+		id, err := selectedDeviceID(targets, value.target)
+		if err != nil {
+			return err
+		}
+		r := ranges[id]
+		if r.actions != nil {
+			return usagef("--device-weights specified more than once for %q", value.target)
+		}
+		r.actions = value.actions
+		ranges[id] = r
+	}
+	return nil
 }
