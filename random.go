@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -31,6 +32,7 @@ type randomOptions struct {
 	customName   string
 	dryRun       bool
 	independent  bool
+	deviceRanges map[string]deviceRandomRanges
 }
 
 // cmdRandom sends controls at randomized start-to-start intervals, with
@@ -51,6 +53,9 @@ func cmdRandom(g *globals, args []string) error {
 		durationMin:  500,
 		durationMax:  2000,
 	}
+	var deviceIntensities, deviceDurations []deviceRange
+	fs.Var(deviceRangeFlag{values: &deviceIntensities}, "device-intensity", "per-shocker intensity: SHOCKER=MIN..MAX or SHOCKER=VALUE (repeatable)")
+	fs.Var(deviceRangeFlag{values: &deviceDurations, duration: true}, "device-duration", "per-shocker duration: SHOCKER=MIN..MAX or SHOCKER=VALUE (repeatable)")
 	fs.Var(secondsValue{&opts.delayMin}, "delay-min", "minimum interval between control starts, e.g. 5, 5s, 500ms")
 	fs.Var(secondsValue{&opts.delayMax}, "delay-max", "maximum interval between control starts")
 	fs.IntVar(&opts.intensityMin, "intensity-min", opts.intensityMin, "minimum intensity (0..100)")
@@ -110,6 +115,11 @@ func cmdRandom(g *globals, args []string) error {
 		return err
 	}
 
+	opts.deviceRanges, err = resolveDeviceRanges(targets, deviceIntensities, deviceDurations)
+	if err != nil {
+		return err
+	}
+
 	var c *Client
 	if !opts.dryRun {
 		if c, err = g.client(); err != nil {
@@ -121,6 +131,12 @@ func cmdRandom(g *globals, args []string) error {
 	defer stop()
 
 	log := &loopLogger{g: g}
+	if len(opts.deviceRanges) > 0 {
+		for _, target := range targets {
+			ranges := opts.forTarget(target)
+			log.logf("%s: intensity %d..%d, duration %d..%dms", target.Label(), ranges.intensityMin, ranges.intensityMax, ranges.durationMin, ranges.durationMax)
+		}
+	}
 	if opts.independent && len(targets) > 1 {
 		return runIndependentLoops(ctx, c, targets, opts, roundsMin, roundsMax, log)
 	}
@@ -184,7 +200,7 @@ func runIndependentLoops(ctx context.Context, c *Client, targets []Shocker, opts
 		wg.Add(1)
 		go func(i int, target Shocker) {
 			defer wg.Done()
-			n, loopErr := runRandomLoop(ctx, c, []Shocker{target}, target.Label(), opts, roundsMin, roundsMax, newRand(opts.seed, i), log)
+			n, loopErr := runRandomLoop(ctx, c, []Shocker{target}, target.Label(), opts.forTarget(target), roundsMin, roundsMax, newRand(opts.seed, i), log)
 			atomic.AddInt64(&sent, int64(n))
 			if loopErr != nil {
 				errMu.Lock()
@@ -208,8 +224,7 @@ func runIndependentLoops(ctx context.Context, c *Client, targets []Shocker, opts
 }
 
 // runRandomLoop drives one schedule. targets are sent together in a single
-// control request, which is how the non-independent mode applies one draw to
-// several shockers.
+// control request. Global draws are shared; per-device overrides draw separately.
 func runRandomLoop(ctx context.Context, c *Client, targets []Shocker, label string, opts randomOptions, roundsMin, roundsMax int, rnd *rand.Rand, log *loopLogger) (int, error) {
 	return runRandomLoopWithClock(ctx, c, targets, label, opts, roundsMin, roundsMax, rnd, log, time.Now, sleepCtx)
 }
@@ -234,9 +249,25 @@ func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, l
 		intensity := randInt(rnd, opts.intensityMin, opts.intensityMax)
 		duration := randInt(rnd, opts.durationMin, opts.durationMax)
 
+		payload := buildControlRequest(targets, opts.mode, intensity, duration, opts.exclusive, opts.customName)
+		for i, target := range targets {
+			ranges := opts.deviceRanges[strings.ToLower(target.ID)]
+			if ranges.intensity != nil {
+				payload.Shocks[i].Intensity = randInt(rnd, ranges.intensity.min, ranges.intensity.max)
+			}
+			if ranges.duration != nil {
+				payload.Shocks[i].Duration = randInt(rnd, ranges.duration.min, ranges.duration.max)
+			}
+		}
+
 		deadline := previousStart.Add(secondsToDuration(delay))
 		wait := max(time.Duration(0), deadline.Sub(now()))
-		if opts.count == 1 && roundsMin == roundsMax {
+		if len(opts.deviceRanges) > 0 {
+			for i, target := range targets {
+				control := payload.Shocks[i]
+				log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", target.Label(), round, opts.mode, control.Intensity, control.Duration, wait.Seconds())
+			}
+		} else if opts.count == 1 && roundsMin == roundsMax {
 			log.logf("%s: %s i=%d d=%dms in %.1fs", label, opts.mode, intensity, duration, wait.Seconds())
 		} else {
 			log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", label, round, opts.mode, intensity, duration, wait.Seconds())
@@ -254,7 +285,6 @@ func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, l
 			log.logf("%s: dry-run, not sending", label)
 			continue
 		}
-		payload := buildControlRequest(targets, opts.mode, intensity, duration, opts.exclusive, opts.customName)
 		if err := c.Post("/2/shockers/control", payload, nil); err != nil {
 			return sent, err
 		}

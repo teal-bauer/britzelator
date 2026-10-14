@@ -161,6 +161,8 @@ britzelator random Collar1 Collar2 Collar3 --independent --delay-min 10s --delay
 | `--delay-min` / `--delay-max` | 5 / 30 | wait before each round; bare numbers are seconds |
 | `--intensity-min` / `--intensity-max` | 5 / 30 | intensity range (0..100) |
 | `--duration-min` / `--duration-max` | 500 / 2000 | duration range (300ms..65535ms); bare numbers are milliseconds |
+| `--device-intensity` | | per-shocker override: `SHOCKER=MIN..MAX` or `SHOCKER=VALUE`; repeatable |
+| `--device-duration` | | per-shocker duration override with the same syntax; repeatable |
 | `--mode` | shock | mode used for every round |
 | `--count` | 0 | fixed rounds per loop; 0 means until interrupted |
 | `--count-min` / `--count-max` | | draw the round count per loop from this range |
@@ -174,8 +176,20 @@ delays accept the same suffixes with bare numbers read as seconds (`30`, `30s`,
 `500ms`, `2m`). The same suffixes work for `control --duration` and the token
 limit flags.
 
+Per-device ranges override only the specified setting; other settings use the
+global ranges. References resolve against the selected shockers using UUIDs,
+names, unique substrings, or qualified labels. Unknown, ambiguous, and duplicate
+overrides are rejected. Overrides never add devices to the target list. When
+selecting devices by UUID only, use those UUIDs in overrides as well.
+
+```sh
+britzelator random Zap Zip --dry-run --count 3 \
+    --device-intensity 'Zap=3..8' --device-duration 'Zap=300ms..500ms' \
+    --device-intensity 'Zip=10..20' --device-duration 'Zip=500ms..1s'
+```
+
 Without `--independent`, one draw drives every named shocker in a single control
-request. With it, each shocker gets its own goroutine, random source, and
+request, with separate draws for any per-device range overrides. With it, each shocker gets its own goroutine, random source, and
 schedule, so they fire at unrelated times; `--count-min`/`--count-max` and
 `--seed` are then drawn per loop (a fixed seed derives one seed per shocker, so
 runs stay reproducible). The first API error stops the other loops and Ctrl-C
