@@ -98,7 +98,7 @@ func TestRandomLoopDryRunTiming(t *testing.T) {
 	}
 }
 
-func TestRandomLoopDropsTransientSendErrors(t *testing.T) {
+func TestRandomLoopRetriesTransientSendErrors(t *testing.T) {
 	calls := 0
 	c := &Client{Base: "http://test.invalid", HTTP: &http.Client{Transport: randomTransport(func(r *http.Request) (*http.Response, error) {
 		calls++
@@ -116,11 +116,30 @@ func TestRandomLoopDropsTransientSendErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loop aborted on transient error: %v", err)
 	}
-	if sent != 2 {
-		t.Fatalf("sent=%d want 2", sent)
+	if sent != 3 {
+		t.Fatalf("sent=%d want 3", sent)
 	}
-	if calls != 3 {
-		t.Fatalf("calls=%d want 3", calls)
+	if calls != 4 {
+		t.Fatalf("calls=%d want 4", calls)
+	}
+}
+
+func TestControlTimeout(t *testing.T) {
+	c := &Client{Timeout: 15 * time.Second}
+	for _, tc := range []struct {
+		name  string
+		delay float64
+		want  time.Duration
+	}{
+		{"sub-second delay floors at 2s", 0.2, 2 * time.Second},
+		{"delay above floor is used", 7, 7 * time.Second},
+		{"global timeout caps the deadline", 30, 15 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := controlTimeout(c, tc.delay); got != tc.want {
+				t.Fatalf("controlTimeout=%s want=%s", got, tc.want)
+			}
+		})
 	}
 }
 

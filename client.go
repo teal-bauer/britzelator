@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,8 +72,14 @@ type Client struct {
 }
 
 func (c *Client) do(method, path string, body io.Reader, contentType string) (Result, error) {
+	return c.doContext(context.Background(), method, path, body, contentType)
+}
+
+// doContext is do with a caller-supplied context, used to give a single request
+// a deadline shorter than the client-wide timeout.
+func (c *Client) doContext(ctx context.Context, method, path string, body io.Reader, contentType string) (Result, error) {
 	url := strings.TrimRight(c.Base, "/") + path
-	req, err := http.NewRequest(method, url, body)
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return Result{}, err
 	}
@@ -124,6 +131,10 @@ func (c *Client) do(method, path string, body io.Reader, contentType string) (Re
 // doJSON performs a request, encodes payload as JSON when non-nil, and decodes
 // the response into out when out is non-nil.
 func (c *Client) doJSON(method, path string, payload any, out any) (Result, error) {
+	return c.doJSONContext(context.Background(), method, path, payload, out)
+}
+
+func (c *Client) doJSONContext(ctx context.Context, method, path string, payload any, out any) (Result, error) {
 	var body io.Reader
 	contentType := ""
 	if payload != nil {
@@ -134,7 +145,7 @@ func (c *Client) doJSON(method, path string, payload any, out any) (Result, erro
 		body = bytes.NewReader(raw)
 		contentType = "application/json"
 	}
-	res, err := c.do(method, path, body, contentType)
+	res, err := c.doContext(ctx, method, path, body, contentType)
 	if err != nil {
 		return res, err
 	}
@@ -152,6 +163,13 @@ func (c *Client) Get(path string, out any) error {
 }
 func (c *Client) Post(path string, payload, out any) error {
 	_, err := c.doJSON(http.MethodPost, path, payload, out)
+	return err
+}
+
+// PostContext posts with a caller context, letting a single request be bounded
+// without changing the client-wide timeout shared by other requests.
+func (c *Client) PostContext(ctx context.Context, path string, payload, out any) error {
+	_, err := c.doJSONContext(ctx, http.MethodPost, path, payload, out)
 	return err
 }
 

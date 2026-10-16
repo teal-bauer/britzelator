@@ -259,71 +259,114 @@ func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, l
 		if opts.delayMax > opts.delayMin {
 			delay = opts.delayMin + rnd.Float64()*(opts.delayMax-opts.delayMin)
 		}
-		mode := opts.drawMode(rnd)
-		intensity := randInt(rnd, opts.intensityMin, opts.intensityMax)
-		duration := randInt(rnd, opts.durationMin, opts.durationMax)
-
-		payload := buildControlRequest(targets, mode, intensity, duration, opts.exclusive, opts.customName)
-		for i, target := range targets {
-			ranges := opts.deviceRanges[strings.ToLower(target.ID)]
-			if ranges.actions != nil {
-				payload.Shocks[i].Type = opts.forTarget(target).drawMode(rnd)
-			}
-			if ranges.intensity != nil {
-				payload.Shocks[i].Intensity = randInt(rnd, ranges.intensity.min, ranges.intensity.max)
-			}
-			if ranges.duration != nil {
-				payload.Shocks[i].Duration = randInt(rnd, ranges.duration.min, ranges.duration.max)
-			}
-		}
-
 		deadline := previousStart.Add(secondsToDuration(delay))
-		wait := max(time.Duration(0), deadline.Sub(now()))
-		if len(opts.deviceRanges) > 0 {
+		timeout := controlTimeout(c, delay)
+
+		// A round keeps its slot: on a transient failure the draw is repeated
+		// immediately, after a short guard, until it lands. That way the run
+		// still delivers the requested count instead of losing rounds to a
+		// brief outage. A rejected request aborts instead of spinning.
+		for attempt := 1; ; attempt++ {
+			mode := opts.drawMode(rnd)
+			intensity := randInt(rnd, opts.intensityMin, opts.intensityMax)
+			duration := randInt(rnd, opts.durationMin, opts.durationMax)
+
+			payload := buildControlRequest(targets, mode, intensity, duration, opts.exclusive, opts.customName)
 			for i, target := range targets {
-				control := payload.Shocks[i]
-				log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", target.Label(), round, control.Type, control.Intensity, control.Duration, wait.Seconds())
+				ranges := opts.deviceRanges[strings.ToLower(target.ID)]
+				if ranges.actions != nil {
+					payload.Shocks[i].Type = opts.forTarget(target).drawMode(rnd)
+				}
+				if ranges.intensity != nil {
+					payload.Shocks[i].Intensity = randInt(rnd, ranges.intensity.min, ranges.intensity.max)
+				}
+				if ranges.duration != nil {
+					payload.Shocks[i].Duration = randInt(rnd, ranges.duration.min, ranges.duration.max)
+				}
 			}
-		} else if opts.count == 1 && roundsMin == roundsMax {
-			log.logf("%s: %s i=%d d=%dms in %.1fs", label, mode, intensity, duration, wait.Seconds())
-		} else {
-			log.logf("%s: round %d: %s i=%d d=%dms in %.1fs", label, round, mode, intensity, duration, wait.Seconds())
-		}
 
-		// HTTP response time counts toward the interval. Rebase on actual
-		// starts so overruns cannot build up a backlog of overdue controls.
-		if err := sleep(ctx, max(time.Duration(0), deadline.Sub(now()))); err != nil || ctx.Err() != nil {
-			log.logf("%s: interrupted after %d round(s), %d sent", label, round-1, sent)
-			return sent, nil
-		}
-
-		previousStart = now()
-		if opts.dryRun {
-			log.logf("%s: dry-run, not sending", label)
-			continue
-		}
-		if err := c.Post("/2/shockers/control", payload, nil); err != nil {
-			// A rejected request (4xx) will fail again every round, so surface
-			// it. Transport failures and server-side errors are usually
-			// transient: log the round as dropped and keep the schedule going
-			// rather than tearing down the whole run.
-			if permanentControlError(err) {
-				return sent, err
+			wait := max(time.Duration(0), deadline.Sub(now()))
+			retry := ""
+			if attempt > 1 {
+				// The slot's delay is already spent; space out immediate
+				// re-draws so a failing API is not hammered.
+				wait = controlRetryGuard
+				retry = fmt.Sprintf(" (retry %d)", attempt-1)
 			}
-			log.logf("%s: round %d send failed, dropping it: %v", label, round, err)
-			continue
+			if len(opts.deviceRanges) > 0 {
+				for i, target := range targets {
+					control := payload.Shocks[i]
+					log.logf("%s: round %d%s: %s i=%d d=%dms in %.1fs", target.Label(), round, retry, control.Type, control.Intensity, control.Duration, wait.Seconds())
+				}
+			} else if opts.count == 1 && roundsMin == roundsMax && attempt == 1 {
+				log.logf("%s: %s i=%d d=%dms in %.1fs", label, mode, intensity, duration, wait.Seconds())
+			} else {
+				log.logf("%s: round %d%s: %s i=%d d=%dms in %.1fs", label, round, retry, mode, intensity, duration, wait.Seconds())
+			}
+
+			if err := sleep(ctx, wait); err != nil || ctx.Err() != nil {
+				log.logf("%s: interrupted after %d round(s), %d sent", label, round-1, sent)
+				return sent, nil
+			}
+
+			// HTTP response time counts toward the interval. Rebase on actual
+			// starts so overruns cannot build up a backlog of overdue controls.
+			if attempt == 1 {
+				previousStart = now()
+			}
+			if opts.dryRun {
+				log.logf("%s: dry-run, not sending", label)
+				break
+			}
+			if err := sendControl(ctx, c, payload, timeout); err != nil {
+				if permanentControlError(err) {
+					return sent, err
+				}
+				log.logf("%s: round %d send failed, re-drawing immediately: %v", label, round, err)
+				continue
+			}
+			sent++
+			log.logf("%s: sent", label)
+			break
 		}
-		sent++
-		log.logf("%s: sent", label)
 	}
 	log.logf("%s: finished, %d sent", label, sent)
 	return sent, nil
 }
 
+// controlMinTimeout floors a single control request's deadline so a normal API
+// round trip can finish even when rounds are closely spaced, and controlRetryGuard
+// spaces out immediate re-draws after a transient failure.
+const (
+	controlMinTimeout = 2 * time.Second
+	controlRetryGuard = 250 * time.Millisecond
+)
+
+// controlTimeout bounds one control request by the round's drawn delay, never
+// below controlMinTimeout, and never above the client's configured timeout.
+func controlTimeout(c *Client, delay float64) time.Duration {
+	d := secondsToDuration(delay)
+	if d < controlMinTimeout {
+		d = controlMinTimeout
+	}
+	if c != nil && c.Timeout > 0 && d > c.Timeout {
+		d = c.Timeout
+	}
+	return d
+}
+
+// sendControl posts one control request with a per-request deadline, leaving
+// the client-wide timeout intact for other requests.
+func sendControl(ctx context.Context, c *Client, payload any, timeout time.Duration) error {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return c.PostContext(reqCtx, "/2/shockers/control", payload, nil)
+}
+
 // permanentControlError reports whether a failed control request was rejected
 // by the API rather than failing transiently. Request-level failures (4xx
 // other than 429) repeat on every retry, so they abort; timeouts, transport
-// errors, 429, and 5xx are treated as transient and the round is dropped.
+// errors, 429, and 5xx are treated as transient and the round is re-drawn.
 func permanentControlError(err error) bool {
 	var se *StatusError
 	if errors.As(err, &se) {
