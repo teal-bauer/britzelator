@@ -41,6 +41,18 @@ func (p *Problem) Error() string {
 	return fmt.Sprintf("http %d: %s", p.Status, msg)
 }
 
+// StatusError is returned for HTTP error responses whose body is not an RFC
+// 7807 Problem. It carries the status code so callers can tell a rejected
+// request from a retryable server failure.
+type StatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("http %d: %s", e.Status, e.Body)
+}
+
 type Result struct {
 	Status  int
 	Body    []byte
@@ -104,7 +116,7 @@ func (c *Client) do(method, path string, body io.Reader, contentType string) (Re
 		if len(snippet) > 400 {
 			snippet = snippet[:400] + "…"
 		}
-		return res, fmt.Errorf("http %d: %s", resp.StatusCode, snippet)
+		return res, &StatusError{Status: resp.StatusCode, Body: snippet}
 	}
 	return res, nil
 }

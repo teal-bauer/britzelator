@@ -97,3 +97,57 @@ func TestRandomLoopDryRunTiming(t *testing.T) {
 		t.Fatalf("waits=%v", waits)
 	}
 }
+
+func TestRandomLoopDropsTransientSendErrors(t *testing.T) {
+	calls := 0
+	c := &Client{Base: "http://test.invalid", HTTP: &http.Client{Transport: randomTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 2 {
+			return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})}}
+	opts := randomOptions{mode: "Shock", delayMin: 0, delayMax: 0, intensityMin: 3, intensityMax: 3, durationMin: 300, durationMax: 300}
+	now := time.Unix(0, 0)
+	sent, err := runRandomLoopWithClock(context.Background(), c, []Shocker{{ID: "test"}}, "test", opts, 3, 3, newRand(1, 0), &loopLogger{g: &globals{quiet: true}}, func() time.Time { return now }, func(ctx context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("loop aborted on transient error: %v", err)
+	}
+	if sent != 2 {
+		t.Fatalf("sent=%d want 2", sent)
+	}
+	if calls != 3 {
+		t.Fatalf("calls=%d want 3", calls)
+	}
+}
+
+func TestRandomLoopAbortsOnRejectedSend(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"problem body", `{"title":"Invalid control","status":400}`},
+		{"plain body", "rejected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Client{Base: "http://test.invalid", HTTP: &http.Client{Transport: randomTransport(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(tc.body)), Header: make(http.Header)}, nil
+			})}}
+			opts := randomOptions{mode: "Shock", delayMin: 0, delayMax: 0, intensityMin: 3, intensityMax: 3, durationMin: 300, durationMax: 300}
+			now := time.Unix(0, 0)
+			sent, err := runRandomLoopWithClock(context.Background(), c, []Shocker{{ID: "test"}}, "test", opts, 3, 3, newRand(1, 0), &loopLogger{g: &globals{quiet: true}}, func() time.Time { return now }, func(ctx context.Context, d time.Duration) error {
+				now = now.Add(d)
+				return nil
+			})
+			if err == nil {
+				t.Fatal("expected a rejected request to abort the loop")
+			}
+			if sent != 0 {
+				t.Fatalf("sent=%d want 0", sent)
+			}
+		})
+	}
+}

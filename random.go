@@ -5,8 +5,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -301,13 +303,37 @@ func runRandomLoopWithClock(ctx context.Context, c *Client, targets []Shocker, l
 			continue
 		}
 		if err := c.Post("/2/shockers/control", payload, nil); err != nil {
-			return sent, err
+			// A rejected request (4xx) will fail again every round, so surface
+			// it. Transport failures and server-side errors are usually
+			// transient: log the round as dropped and keep the schedule going
+			// rather than tearing down the whole run.
+			if permanentControlError(err) {
+				return sent, err
+			}
+			log.logf("%s: round %d send failed, dropping it: %v", label, round, err)
+			continue
 		}
 		sent++
 		log.logf("%s: sent", label)
 	}
 	log.logf("%s: finished, %d sent", label, sent)
 	return sent, nil
+}
+
+// permanentControlError reports whether a failed control request was rejected
+// by the API rather than failing transiently. Request-level failures (4xx
+// other than 429) repeat on every retry, so they abort; timeouts, transport
+// errors, 429, and 5xx are treated as transient and the round is dropped.
+func permanentControlError(err error) bool {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status >= 400 && se.Status < 500 && se.Status != http.StatusTooManyRequests
+	}
+	var p *Problem
+	if errors.As(err, &p) {
+		return p.Status >= 400 && p.Status < 500 && p.Status != http.StatusTooManyRequests
+	}
+	return false
 }
 
 // loopLogger serializes progress lines from concurrent loops.
